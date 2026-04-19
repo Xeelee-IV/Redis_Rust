@@ -8,6 +8,11 @@ use tokio::{
 };
 use std::time::{Duration, Instant};
 
+enum RedisValue {
+    String(String), // holds one string
+    List(Vec<String>), // holds a list of strings
+}
+
 struct Entry {
     value: String,
     expires_at: Option<Instant>, // None = lives forever, Some = has a deadline
@@ -89,18 +94,57 @@ async fn handle_command(command: &str, args: Vec<Vec<u8>>, store: &Store) -> Vec
                     // Check if this key has an expiry AND if that time has passed
                     if let Some(expires_at) = entry.expires_at {
                         if Instant::now() > expires_at {
-                            // Key is expired — delete it and return null
                             store.remove(&key);
                             return b"$-1\r\n".to_vec();
                         }
                     }
-                        // Key exists and is not expired — return the value
-                        format_bulk_string(entry.value.as_bytes())
+                    match &entry.value {
+                        RedisValue::String(s) => format_bulk_string(s.as_bytes()),
+                        RedisValue::List(_)   => {
+                            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n".to_vec()
+                        }
                     }
-                    None => b"$-1\r\n".to_vec(), // null bulk string = key not found
                 }
+                    None => b"$-1\r\n".to_vec(), // null bulk string = key not found
             }
+        }
+            
+            "rpush" => {
+            // args[0] = key, args[1] = value
+            if args.len() < 2 {
+                return b"-ERR wrong number of arguments for 'rpush' command\r\n".to_vec();
+            }
+            let key   = String::from_utf8_lossy(&args[0]).to_string();
+            let value = String::from_utf8_lossy(&args[1]).to_string();
 
+            let mut store = store.lock().await;
+
+            // get the existing entry, or create a new list
+            let list_len = match store.get_mut(&key) {
+                Some(entry) => {
+                    // key exists — push onto the list
+                    match &mut entry.value {
+                        RedisValue::List(list) => {
+                            list.push(value);
+                            list.len()
+                        }
+                        _ => return b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n".to_vec(),
+                    }
+                }
+                None => {
+                    // key doesn't exist — create a new list with one element
+                    store.insert(key, Entry {
+                        value: RedisValue::List(vec![value]),
+                        expires_at: None, // lists don't support expiry in basic Redis
+                    });
+                    1 // 1 list element
+                }
+            };
+
+            // RPUSH returns the length of the list as an integer reply
+            // integer reply format is: :NUMBER\r\n
+            format!(":{}\r\n", list_len).into_bytes()
+        }
         _ => b"-ERR unknown command\r\n".to_vec(),
     }
 }
