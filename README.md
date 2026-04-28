@@ -108,7 +108,7 @@ Expiry uses **lazy deletion** — expired keys are checked and removed at the mo
 ### Run the server
 
 ```bash
-git clone https://github.com/your-username/redis-rust
+git clone https://github.com/Xeelee-IV/redis-rust
 cd redis-rust
 cargo run
 ```
